@@ -33,6 +33,7 @@ GITHUB_ISSUES_API_URL = "https://api.github.com/repos/{repo}/issues"
 GITHUB_ISSUE_API_URL = "https://api.github.com/repos/{repo}/issues/{issue_number}"
 GITHUB_PR_API_URL = "https://api.github.com/repos/{repo}/pulls/{pr_number}"
 GITHUB_RATE_LIMIT_URL = "https://api.github.com/rate_limit"
+GITHUB_EVENTS_API_URL = "https://api.github.com/repos/{repo}/events"
 
 # Path for storing subscription data
 SUBSCRIPTION_FILE = "data/github_subscriptions.json"
@@ -40,6 +41,8 @@ SUBSCRIPTION_FILE = "data/github_subscriptions.json"
 DEFAULT_REPO_FILE = "data/github_default_repos.json"
 # Path for storing link resolution settings
 LINK_SETTINGS_FILE = "data/github_link_settings.json"
+# Path for storing polling state
+POLLING_STATE_FILE = "data/github_polling_state.json"
 
 
 @register(
@@ -56,7 +59,9 @@ class MyPlugin(Star):
         self.subscriptions = self._load_subscriptions()
         self.default_repos = self._load_default_repos()
         self.link_settings = self._load_link_settings()
-        self.last_check_time = {}  # Store the last check time for each repo
+        polling_state = self._load_polling_state()
+        self.last_check_time = polling_state.get("last_check_time", {})
+        self.last_push_event_ids = polling_state.get("last_push_event_ids", {})
         self.use_lowercase = self.config.get("use_lowercase_repo", True)
         self.auto_resolve_links = self.config.get("auto_resolve_links", True)
         self.github_token = self.config.get("github_token", "")
@@ -66,6 +71,9 @@ class MyPlugin(Star):
         self.webhook_port = int(self.config.get("webhook_port", 6192))
         self.webhook_secret = self.config.get("webhook_secret", "")
         self.webhook_path = self.config.get("webhook_path", "/github/webhook")
+        self.enable_push_notification = bool(
+            self.config.get("enable_push_notification", False)
+        )
         self.webhook_server: Any | None = None
         self.task: asyncio.Task[Any] | None = None
 
@@ -143,6 +151,27 @@ class MyPlugin(Star):
                 json.dump(self.link_settings, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存链接解析设置失败: {e}")
+
+    def _load_polling_state(self) -> dict[str, dict[str, str]]:
+        if os.path.exists(POLLING_STATE_FILE):
+            try:
+                with open(POLLING_STATE_FILE, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"加载轮询状态失败: {e}")
+        return {"last_check_time": {}, "last_push_event_ids": {}}
+
+    def _save_polling_state(self):
+        try:
+            os.makedirs(os.path.dirname(POLLING_STATE_FILE), exist_ok=True)
+            state = {
+                "last_check_time": self.last_check_time,
+                "last_push_event_ids": self.last_push_event_ids,
+            }
+            with open(POLLING_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存轮询状态失败: {e}")
 
     def _normalize_repo_name(self, repo: str) -> str:
         """Normalize repository name according to configuration"""
@@ -297,6 +326,7 @@ class MyPlugin(Star):
                 del self.subscriptions[repo_key]
             self._save_subscriptions()
             self.last_check_time.pop(repo_key, None)
+            self._save_polling_state()
             yield event.plain_result(f"已取消订阅仓库 {repo_key}")
         else:
             yield event.plain_result(f"你没有订阅仓库 {repo}")
@@ -389,22 +419,36 @@ class MyPlugin(Star):
 
         for repo in list(self.subscriptions.keys()):
             logger.debug(f"正在检查仓库 {repo} 更新")
-            if not self.subscriptions[repo]:  # Skip if no subscribers
+            if not self.subscriptions[repo]:
                 continue
 
             try:
-                # Get the last check time for this repo
                 last_check = self.last_check_time.get(repo, None)
 
-                # Fetch new issues and PRs
                 new_items = await self._fetch_new_items(repo, last_check)
 
                 if new_items:
-                    # Update last check time
                     self.last_check_time[repo] = datetime.now().isoformat()
-
-                    # Notify subscribers about new items
                     await self._notify_subscribers(repo, new_items)
+
+                if self.enable_push_notification:
+                    push_events = await self._fetch_push_events(repo)
+
+                    if push_events:
+                        await self._notify_push_events(repo, push_events)
+
+                        new_event_ids = [event.get("id") for event in push_events]
+                        existing_ids = self.last_push_event_ids.get(repo, [])
+                        self.last_push_event_ids[repo] = existing_ids + new_event_ids
+
+                        max_ids_to_keep = 100
+                        if len(self.last_push_event_ids[repo]) > max_ids_to_keep:
+                            self.last_push_event_ids[repo] = self.last_push_event_ids[
+                                repo
+                            ][-max_ids_to_keep:]
+
+                        self._save_polling_state()
+
             except Exception as e:
                 logger.error(f"检查仓库 {repo} 更新时出错: {e}")
 
@@ -417,6 +461,7 @@ class MyPlugin(Star):
                 datetime.utcnow().replace(microsecond=0).isoformat()
             )
             logger.info(f"初始化仓库 {repo} 的时间戳: {self.last_check_time[repo]}")
+            self._save_polling_state()
             return []
 
         try:
@@ -490,6 +535,7 @@ class MyPlugin(Star):
                 datetime.utcnow().replace(microsecond=0).isoformat()
             )
             logger.debug(f"更新仓库 {repo} 的时间戳为: {self.last_check_time[repo]}")
+            self._save_polling_state()
 
             return new_items
         except Exception as e:
@@ -502,7 +548,95 @@ class MyPlugin(Star):
             logger.info(
                 f"出错后更新仓库 {repo} 的时间戳为: {self.last_check_time[repo]}"
             )
+            self._save_polling_state()
             return []
+
+    async def _fetch_push_events(self, repo: str) -> list[dict[str, Any]]:
+        """Fetch new push events from a repository.
+
+        Args:
+            repo: Repository name in format 'owner/repo'
+
+        Returns:
+            List of new push events, sorted chronologically (oldest first)
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = GITHUB_EVENTS_API_URL.format(repo=repo)
+                params = {"per_page": 30}
+
+                async with session.get(
+                    url, params=params, headers=self._get_github_headers()
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        if len(text) > 100:
+                            text = text[:100] + "..."
+                        logger.error(
+                            f"获取仓库 {repo} 的事件失败: {resp.status}: {text}"
+                        )
+                        return []
+
+                    events = await resp.json()
+
+                    push_events = [
+                        event for event in events if event.get("type") == "PushEvent"
+                    ]
+
+                    known_ids = set(self.last_push_event_ids.get(repo, []))
+
+                    new_events = [
+                        event
+                        for event in push_events
+                        if event.get("id") not in known_ids
+                    ]
+
+                    if new_events:
+                        new_events.sort(
+                            key=lambda e: e.get("created_at", ""),
+                            reverse=False,
+                        )
+                        logger.info(f"找到 {len(new_events)} 个新的 Push 事件在 {repo}")
+                    else:
+                        logger.debug(f"没有找到新的 Push 事件在 {repo}")
+
+                    return new_events
+
+        except Exception as e:
+            logger.error(f"获取仓库 {repo} 的 Push 事件时出错: {e}")
+            return []
+
+    async def _notify_push_events(self, repo: str, push_events: list[dict[str, Any]]):
+        """Notify subscribers about new push events"""
+        if not push_events:
+            return
+
+        repo_key = self._resolve_repo_key(repo) or repo
+
+        for subscriber_id in self.subscriptions.get(repo_key, []):
+            try:
+                for event in push_events:
+                    payload = event.get("payload", {})
+                    ref = payload.get("ref", "")
+                    pusher = payload.get("actor", {})
+                    commits = payload.get("commits", [])
+                    compare = payload.get("compare", "")
+                    forced = payload.get("forced", False)
+
+                    pusher_info = {"name": pusher.get("login", "未知")}
+
+                    message = formatters.format_webhook_push_message(
+                        repo, ref, pusher_info, commits, compare, forced
+                    )
+
+                    if message:
+                        await self.context.send_message(
+                            subscriber_id,
+                            MessageChain(chain=[Comp.Plain(message)]),
+                        )
+                        await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"向订阅者 {subscriber_id} 发送 Push 通知时出错: {e}")
 
     async def _notify_subscribers(self, repo: str, new_items: list[dict[str, Any]]):
         """Notify subscribers about new issues and PRs"""
@@ -639,6 +773,18 @@ class MyPlugin(Star):
         elif event_type == "create":
             message = formatters.format_webhook_create_message(
                 repo_full_name, payload, sender
+            )
+        elif event_type == "push":
+            if not self.enable_push_notification:
+                logger.debug("Push 推送通知已关闭，忽略 push 事件")
+                return
+            ref = payload.get("ref", "")
+            pusher = payload.get("pusher")
+            commits = payload.get("commits", [])
+            compare = payload.get("compare", "")
+            forced = payload.get("forced", False)
+            message = formatters.format_webhook_push_message(
+                repo_full_name, ref, pusher, commits, compare, forced
             )
         else:
             logger.debug(f"暂不处理的 GitHub Webhook 事件类型: {event_type}")
@@ -969,6 +1115,7 @@ class MyPlugin(Star):
         self._save_subscriptions()
         self._save_default_repos()
         self._save_link_settings()
+        self._save_polling_state()
         if self.task:
             self.task.cancel()
             try:

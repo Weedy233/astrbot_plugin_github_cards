@@ -52,5 +52,11 @@
     "type": "string",
     "hint": "与 GitHub Webhook 设置中的 Secret 保持一致以验证请求",
     "default": ""
+  },
+  "enable_push_notification": {
+    "description": "启用 Push 推送通知",
+    "type": "bool",
+    "hint": "开启后将接收仓库的 Push 事件并推送提交摘要，默认关闭",
+    "default": false
   }
 }

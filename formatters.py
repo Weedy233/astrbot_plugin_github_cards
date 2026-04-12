@@ -428,6 +428,50 @@ def format_webhook_create_message(
     return "\n".join(message_lines)
 
 
+def format_webhook_push_message(
+    repo: str,
+    ref: str,
+    pusher: dict,
+    commits: list,
+    compare: str,
+    forced: bool = False,
+) -> str | None:
+    if ref.startswith("refs/tags/"):
+        return None
+
+    if not commits:
+        return None
+
+    branch = ref
+    if branch.startswith("refs/heads/"):
+        branch = branch[11:]
+    elif branch.startswith("refs/"):
+        return None
+
+    pusher_name = (pusher or {}).get("name") or "未知"
+
+    message_lines = [
+        f"[GitHub Webhook] 仓库 {repo} 有新的 Push",
+        f"分支: {branch}",
+        f"推送者: {pusher_name}",
+        f"提交数量: {len(commits)}",
+        "",
+    ]
+
+    for commit in commits[:5]:
+        message = commit.get("message", "").split("\n")[0]
+        message_lines.append(f"- {truncate_text(message, 80)}")
+
+    if forced:
+        message_lines.append("")
+        message_lines.append("⚠️ Force Push")
+
+    if compare:
+        message_lines.append(f"链接: {compare}")
+
+    return "\n".join(message_lines)
+
+
 def format_issue_details(repo: str, issue_data: dict[str, Any]) -> str:
     if "pull_request" in issue_data:
         return f"#{issue_data['number']} 是一个 PR，请使用 /ghpr 命令查看详情"
@@ -504,9 +548,7 @@ def format_pr_details(repo: str, pr_data: dict[str, Any]) -> str:
         result += f"审阅者: {reviewers}\n"
 
     if pr_data.get("assignees") and len(pr_data["assignees"]) > 0:
-        assignees = ", ".join(
-            [assignee["login"] for assignee in pr_data["assignees"]]
-        )
+        assignees = ", ".join([assignee["login"] for assignee in pr_data["assignees"]])
         result += f"指派给: {assignees}\n"
 
     result += (

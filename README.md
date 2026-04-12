@@ -6,10 +6,11 @@
 
 1. 自动识别群聊中的 GitHub 仓库链接，发送卡片图片
 2. 支持轮询与 Webhook 两种更新方式，可按需选择
-3. 当订阅的仓库有新的 Issue、PR、评论、Star、Fork 等事件时自动发送通知
-4. 查询指定 Issue 或 PR 的详细信息
-5. 支持默认仓库设置，简化命令使用
-6. 查看 GitHub API 速率限制状态
+3. 订阅仓库的 Push 更新，自动推送提交摘要
+4. 当订阅的仓库有新的 Issue、PR、评论、Star、Fork 等事件时自动发送通知
+5. 查询指定 Issue 或 PR 的详细信息
+6. 支持默认仓库设置，简化命令使用
+7. 查看 GitHub API 速率限制状态
 
 ## 使用方法
 
@@ -66,7 +67,8 @@
    - **Webhook 监听端口**（默认 `6192`）
    - **Webhook 路径**（默认 `/github/webhook`）
    - **Webhook Secret**（可选，若设置需与 GitHub Webhook 保持一致）
-3. 保存配置后重启 AstrBot 或重新加载插件，插件会启动一个基于 Quart 的 HTTP 服务。
+3. 如需接收 Push 推送通知，请启用 **启用 Push 推送通知** 配置项（默认关闭）。
+4. 保存配置后重启 AstrBot 或重新加载插件，插件会启动一个基于 Quart 的 HTTP 服务。
 
 ### GitHub 端设置
 
@@ -76,6 +78,7 @@
    - **Content type**：选择 `application/json`
    - **Secret**：若在插件中设置了 Secret，请在此填写相同内容
 3. 在 **Which events would you like to trigger this webhook?** 保持默认「Just the push event」改为 **Let me select individual events**，并勾选以下事件（建议全选以获得完整体验）：
+   - `Push`（必须勾选，启用后插件会接收仓库的 push 通知并发送提交摘要）
    - `Issues`
    - `Issue comments`
    - `Pull requests`
@@ -92,6 +95,7 @@
 
 ### 已支持的 Webhook 事件
 
+- Push：仓库有新的提交推送
 - Issue：新建、关闭、重新打开
 - Issue 评论：创建、编辑、删除
 - Pull Request：新建、关闭（含合并）、重新打开
@@ -99,6 +103,12 @@
 - 提交评论（commit_comment）
 - Discussion 及 Discussion 评论
 - Fork、Star、仓库/分支/标签创建
+
+### 轮询模式
+
+轮询模式也支持 Push 检测，通过 GitHub Events API 获取仓库的 push 事件。由于依赖定时轮询，检测频率受限于配置的轮询间隔，可能存在轻微延迟。如需更及时的推送通知，建议使用 Webhook 模式。
+
+**注意**：无论使用 Webhook 还是轮询模式，都需要在配置中启用 **启用 Push 推送通知** 选项才能接收 push 通知，该选项默认关闭。
 
 启用 Webhook 后，轮询任务会自动停止，减少不必要的 API 调用。如需退回到轮询模式，只需关闭配置项并重启插件即可。
 
