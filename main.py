@@ -35,14 +35,8 @@ GITHUB_PR_API_URL = "https://api.github.com/repos/{repo}/pulls/{pr_number}"
 GITHUB_RATE_LIMIT_URL = "https://api.github.com/rate_limit"
 GITHUB_EVENTS_API_URL = "https://api.github.com/repos/{repo}/events"
 
-# Path for storing subscription data
-SUBSCRIPTION_FILE = "data/github_subscriptions.json"
-# Path for storing default repo data
-DEFAULT_REPO_FILE = "data/github_default_repos.json"
-# Path for storing link resolution settings
-LINK_SETTINGS_FILE = "data/github_link_settings.json"
-# Path for storing polling state
-POLLING_STATE_FILE = "data/github_polling_state.json"
+# Data directory will be initialized in __init__ using context.data_dir
+# Files will be stored in: <astrbot_data_dir>/github_cards/
 
 
 @register(
@@ -56,6 +50,19 @@ class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config or {}
+        self.context = context
+
+        # 初始化数据目录（使用 AstrBot 的 data_dir）
+        self.data_dir = Path(context.data_dir) / "github_cards"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[GitHub Cards] 数据目录: {self.data_dir}")
+
+        # 定义数据文件路径
+        self.self.subscription_file = self.data_dir / "subscriptions.json"
+        self.self.default_repo_file = self.data_dir / "default_repos.json"
+        self.self.link_settings_file = self.data_dir / "link_settings.json"
+        self.self.polling_state_file = self.data_dir / "polling_state.json"
+
         self.subscriptions = self._load_subscriptions()
         self.default_repos = self._load_default_repos()
         self.link_settings = self._load_link_settings()
@@ -107,9 +114,9 @@ class MyPlugin(Star):
 
     def _load_subscriptions(self) -> dict[str, list[str]]:
         """Load subscriptions from JSON file"""
-        if os.path.exists(SUBSCRIPTION_FILE):
+        if os.path.exists(self.subscription_file):
             try:
-                with open(SUBSCRIPTION_FILE, encoding="utf-8") as f:
+                with open(self.subscription_file, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载订阅数据失败: {e}")
@@ -118,17 +125,17 @@ class MyPlugin(Star):
     def _save_subscriptions(self):
         """Save subscriptions to JSON file"""
         try:
-            os.makedirs(os.path.dirname(SUBSCRIPTION_FILE), exist_ok=True)
-            with open(SUBSCRIPTION_FILE, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.subscription_file), exist_ok=True)
+            with open(self.subscription_file, "w", encoding="utf-8") as f:
                 json.dump(self.subscriptions, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存订阅数据失败: {e}")
 
     def _load_default_repos(self) -> dict[str, str]:
         """Load default repo settings from JSON file"""
-        if os.path.exists(DEFAULT_REPO_FILE):
+        if os.path.exists(self.default_repo_file):
             try:
-                with open(DEFAULT_REPO_FILE, encoding="utf-8") as f:
+                with open(self.default_repo_file, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载默认仓库数据失败: {e}")
@@ -137,17 +144,17 @@ class MyPlugin(Star):
     def _save_default_repos(self):
         """Save default repo settings to JSON file"""
         try:
-            os.makedirs(os.path.dirname(DEFAULT_REPO_FILE), exist_ok=True)
-            with open(DEFAULT_REPO_FILE, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.default_repo_file), exist_ok=True)
+            with open(self.default_repo_file, "w", encoding="utf-8") as f:
                 json.dump(self.default_repos, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存默认仓库数据失败: {e}")
 
     def _load_link_settings(self) -> dict[str, bool]:
         """Load link resolution settings from JSON file"""
-        if os.path.exists(LINK_SETTINGS_FILE):
+        if os.path.exists(self.link_settings_file):
             try:
-                with open(LINK_SETTINGS_FILE, encoding="utf-8") as f:
+                with open(self.link_settings_file, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载链接解析设置失败: {e}")
@@ -156,16 +163,16 @@ class MyPlugin(Star):
     def _save_link_settings(self):
         """Save link resolution settings to JSON file"""
         try:
-            os.makedirs(os.path.dirname(LINK_SETTINGS_FILE), exist_ok=True)
-            with open(LINK_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.link_settings_file), exist_ok=True)
+            with open(self.link_settings_file, "w", encoding="utf-8") as f:
                 json.dump(self.link_settings, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存链接解析设置失败: {e}")
 
     def _load_polling_state(self) -> dict[str, dict[str, str]]:
-        if os.path.exists(POLLING_STATE_FILE):
+        if os.path.exists(self.polling_state_file):
             try:
-                with open(POLLING_STATE_FILE, encoding="utf-8") as f:
+                with open(self.polling_state_file, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载轮询状态失败: {e}")
@@ -173,12 +180,12 @@ class MyPlugin(Star):
 
     def _save_polling_state(self):
         try:
-            os.makedirs(os.path.dirname(POLLING_STATE_FILE), exist_ok=True)
+            os.makedirs(os.path.dirname(self.polling_state_file), exist_ok=True)
             state = {
                 "last_check_time": self.last_check_time,
                 "last_push_event_ids": self.last_push_event_ids,
             }
-            with open(POLLING_STATE_FILE, "w", encoding="utf-8") as f:
+            with open(self.polling_state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存轮询状态失败: {e}")
