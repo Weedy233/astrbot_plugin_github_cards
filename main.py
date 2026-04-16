@@ -88,11 +88,21 @@ class MyPlugin(Star):
             self.webhook_server = server
             server.start()
             logger.info("GitHub Cards Plugin 初始化完成，启用 Webhook 模式")
+            logger.info(
+                f"[Push] 配置状态: enable_webhook={self.enable_webhook}, "
+                f"enable_push_notification={self.enable_push_notification}, "
+                f"subscriptions={len(self.subscriptions)} 个仓库"
+            )
         else:
             # Start background task to check for updates when webhook is disabled
             self.task = asyncio.create_task(self._check_updates_periodically())
             logger.info(
                 f"GitHub Cards Plugin初始化完成，检查间隔: {self.check_interval}分钟"
+            )
+            logger.info(
+                f"[Push] 配置状态: enable_webhook={self.enable_webhook}, "
+                f"enable_push_notification={self.enable_push_notification}, "
+                f"subscriptions={len(self.subscriptions)} 个仓库"
             )
 
     def _load_subscriptions(self) -> dict[str, list[str]]:
