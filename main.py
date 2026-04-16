@@ -432,22 +432,40 @@ class MyPlugin(Star):
                     await self._notify_subscribers(repo, new_items)
 
                 if self.enable_push_notification:
+                    logger.debug(f"[Push] 开始轮询检查仓库 {repo} 的 push 事件")
                     push_events = await self._fetch_push_events(repo)
+                    logger.debug(
+                        f"[Push] 仓库 {repo} 返回 {len(push_events)} 个新 push 事件"
+                    )
 
                     if push_events:
+                        logger.info(
+                            f"[Push] 仓库 {repo} 发现 {len(push_events)} 个新 push 事件，准备通知订阅者"
+                        )
                         await self._notify_push_events(repo, push_events)
 
                         new_event_ids = [event.get("id") for event in push_events]
                         existing_ids = self.last_push_event_ids.get(repo, [])
                         self.last_push_event_ids[repo] = existing_ids + new_event_ids
+                        logger.debug(
+                            f"[Push] 仓库 {repo} 记录了 {len(new_event_ids)} 个新事件 ID，总计 {len(self.last_push_event_ids[repo])} 个"
+                        )
 
                         max_ids_to_keep = 100
                         if len(self.last_push_event_ids[repo]) > max_ids_to_keep:
                             self.last_push_event_ids[repo] = self.last_push_event_ids[
                                 repo
                             ][-max_ids_to_keep:]
+                            logger.debug(
+                                f"[Push] 仓库 {repo} 事件 ID 列表已截断至 {max_ids_to_keep} 个"
+                            )
 
                         self._save_polling_state()
+                        logger.debug(f"[Push] 仓库 {repo} 轮询状态已保存")
+                else:
+                    logger.debug(
+                        f"[Push] enable_push_notification=False，跳过仓库 {repo} 的 push 事件检查"
+                    )
 
             except Exception as e:
                 logger.error(f"检查仓库 {repo} 更新时出错: {e}")
@@ -560,10 +578,12 @@ class MyPlugin(Star):
         Returns:
             List of new push events, sorted chronologically (oldest first)
         """
+        logger.debug(f"[Push] _fetch_push_events 开始，仓库: {repo}")
         try:
             async with aiohttp.ClientSession() as session:
                 url = GITHUB_EVENTS_API_URL.format(repo=repo)
                 params = {"per_page": 30}
+                logger.debug(f"[Push] 请求 GitHub Events API: {url}")
 
                 async with session.get(
                     url, params=params, headers=self._get_github_headers()
@@ -573,17 +593,22 @@ class MyPlugin(Star):
                         if len(text) > 100:
                             text = text[:100] + "..."
                         logger.error(
-                            f"获取仓库 {repo} 的事件失败: {resp.status}: {text}"
+                            f"[Push] 获取仓库 {repo} 的事件失败: {resp.status}: {text}"
                         )
                         return []
 
                     events = await resp.json()
+                    logger.debug(f"[Push] GitHub Events API 返回 {len(events)} 个事件")
 
                     push_events = [
                         event for event in events if event.get("type") == "PushEvent"
                     ]
+                    logger.debug(f"[Push] 其中 {len(push_events)} 个是 PushEvent 类型")
 
                     known_ids = set(self.last_push_event_ids.get(repo, []))
+                    logger.debug(
+                        f"[Push] 仓库 {repo} 已知的事件 ID 数量: {len(known_ids)}"
+                    )
 
                     new_events = [
                         event
@@ -596,32 +621,54 @@ class MyPlugin(Star):
                             key=lambda e: e.get("created_at", ""),
                             reverse=False,
                         )
-                        logger.info(f"找到 {len(new_events)} 个新的 Push 事件在 {repo}")
+                        logger.info(
+                            f"[Push] 找到 {len(new_events)} 个新的 Push 事件在 {repo}"
+                        )
+                        for event in new_events:
+                            logger.debug(
+                                f"[Push] 新事件: id={event.get('id')}, created_at={event.get('created_at')}"
+                            )
                     else:
-                        logger.debug(f"没有找到新的 Push 事件在 {repo}")
+                        logger.debug(f"[Push] 没有找到新的 Push 事件在 {repo}")
 
                     return new_events
 
         except Exception as e:
-            logger.error(f"获取仓库 {repo} 的 Push 事件时出错: {e}")
+            logger.error(f"[Push] 获取仓库 {repo} 的 Push 事件时出错: {e}")
             return []
 
     async def _notify_push_events(self, repo: str, push_events: list[dict[str, Any]]):
         """Notify subscribers about new push events"""
         if not push_events:
+            logger.debug("[Push] _notify_push_events: 没有事件需要通知")
             return
 
         repo_key = self._resolve_repo_key(repo) or repo
+        subscribers = self.subscriptions.get(repo_key, [])
+        logger.debug(
+            f"[Push] _notify_push_events: 仓库 {repo} 有 {len(subscribers)} 个订阅者"
+        )
 
-        for subscriber_id in self.subscriptions.get(repo_key, []):
+        if not subscribers:
+            logger.debug(f"[Push] 仓库 {repo} 没有订阅者，跳过通知")
+            return
+
+        for subscriber_id in subscribers:
+            logger.debug(
+                f"[Push] 准备向订阅者 {subscriber_id} 发送 {len(push_events)} 个 push 通知"
+            )
             try:
-                for event in push_events:
+                for idx, event in enumerate(push_events):
                     payload = event.get("payload", {})
                     ref = payload.get("ref", "")
                     pusher = payload.get("actor", {})
                     commits = payload.get("commits", [])
                     compare = payload.get("compare", "")
                     forced = payload.get("forced", False)
+
+                    logger.debug(
+                        f"[Push] 处理事件 {idx + 1}/{len(push_events)}: ref={ref}, commits={len(commits)}, forced={forced}"
+                    )
 
                     pusher_info = {"name": pusher.get("login", "未知")}
 
@@ -630,13 +677,25 @@ class MyPlugin(Star):
                     )
 
                     if message:
+                        logger.debug(
+                            f"[Push] 向订阅者 {subscriber_id} 发送消息，长度={len(message)}"
+                        )
                         await self.context.send_message(
                             subscriber_id,
                             MessageChain(chain=[Comp.Plain(message)]),
                         )
+                        logger.info(
+                            f"[Push] 已向订阅者 {subscriber_id} 发送仓库 {repo} 的 push 通知"
+                        )
                         await asyncio.sleep(1)
+                    else:
+                        logger.debug(
+                            f"[Push] 事件 {event.get('id')} 未生成消息 (可能是 tag push 或 deleted branch)"
+                        )
             except Exception as e:
-                logger.error(f"向订阅者 {subscriber_id} 发送 Push 通知时出错: {e}")
+                logger.error(
+                    f"[Push] 向订阅者 {subscriber_id} 发送 Push 通知时出错: {e}"
+                )
 
     async def _notify_subscribers(self, repo: str, new_items: list[dict[str, Any]]):
         """Notify subscribers about new issues and PRs"""
@@ -775,17 +834,29 @@ class MyPlugin(Star):
                 repo_full_name, payload, sender
             )
         elif event_type == "push":
+            logger.debug(
+                f"[Push] 收到 webhook push 事件，enable_push_notification={self.enable_push_notification}"
+            )
             if not self.enable_push_notification:
-                logger.debug("Push 推送通知已关闭，忽略 push 事件")
+                logger.debug("[Push] Push 推送通知已关闭，忽略 push 事件")
                 return
             ref = payload.get("ref", "")
             pusher = payload.get("pusher")
             commits = payload.get("commits", [])
             compare = payload.get("compare", "")
             forced = payload.get("forced", False)
+            logger.debug(
+                f"[Push] webhook push 事件详情: repo={repo_full_name}, ref={ref}, commits_count={len(commits)}, forced={forced}"
+            )
             message = formatters.format_webhook_push_message(
                 repo_full_name, ref, pusher, commits, compare, forced
             )
+            if message:
+                logger.debug(f"[Push] webhook push 消息生成成功，长度={len(message)}")
+            else:
+                logger.debug(
+                    "[Push] webhook push 消息生成失败 (返回 None)，可能是 tag push 或 deleted branch"
+                )
         else:
             logger.debug(f"暂不处理的 GitHub Webhook 事件类型: {event_type}")
             return
